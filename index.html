@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Stock Analysis Agent</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        margin: 0;
+        padding: 0;
+        background: #070b13;
+        color: #f7fafc;
+        display: flex;
+        min-height: 100vh;
+      }
+      .sidebar {
+        width: 260px;
+        background: radial-gradient(circle at top left, #1a365d, #020617);
+        padding: 24px;
+        box-sizing: border-box;
+        border-right: 1px solid rgba(148, 163, 184, 0.3);
+      }
+      .sidebar h1 {
+        font-size: 20px;
+        margin: 0 0 8px;
+      }
+      .sidebar p {
+        font-size: 13px;
+        margin: 0 0 16px;
+        color: #94a3b8;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: rgba(15, 118, 110, 0.1);
+        color: #5eead4;
+        font-size: 11px;
+        margin-bottom: 24px;
+      }
+      .badge-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #22c55e;
+        box-shadow: 0 0 8px rgba(34, 197, 94, 0.9);
+      }
+      .sidebar-section {
+        margin-bottom: 24px;
+      }
+      .sidebar-section h2 {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #64748b;
+        margin: 0 0 8px;
+      }
+      .sidebar-section ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        font-size: 13px;
+        color: #cbd5f5;
+      }
+      .sidebar-section li {
+        margin-bottom: 4px;
+      }
+      .sidebar-footer {
+        position: absolute;
+        bottom: 20px;
+        left: 24px;
+        right: 24px;
+        font-size: 11px;
+        color: #64748b;
+      }
+      .main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        padding: 24px;
+        box-sizing: border-box;
+      }
+      .input-row {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+      }
+      .input-row input[type="text"] {
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid rgba(148, 163, 184, 0.5);
+        color: #e5e7eb;
+        padding: 10px 12px;
+        border-radius: 10px;
+        font-size: 14px;
+        outline: none;
+        min-width: 0;
+      }
+      .input-row input[type="text"]:focus {
+        border-color: #38bdf8;
+        box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.5);
+      }
+      .ticker-input {
+        width: 120px;
+      }
+      .query-input {
+        flex: 1;
+      }
+      button {
+        border: none;
+        border-radius: 10px;
+        padding: 10px 16px;
+        font-size: 14px;
+        background: linear-gradient(135deg, #06b6d4, #4ade80);
+        color: #0f172a;
+        font-weight: 600;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      .chip {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.6);
+        color: #e5e7eb;
+      }
+      .chips-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 16px;
+      }
+      .conversation {
+        flex: 1;
+        background: radial-gradient(circle at top, #020617, #020617 45%, #020617);
+        border-radius: 16px;
+        border: 1px solid rgba(30, 64, 175, 0.55);
+        padding: 16px 18px;
+        overflow-y: auto;
+        box-shadow: 0 22px 80px rgba(15, 23, 42, 0.9);
+      }
+      .message {
+        margin-bottom: 16px;
+      }
+      .message-role {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: #64748b;
+        margin-bottom: 4px;
+      }
+      .message-content {
+        font-size: 14px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+      }
+      .message.user .message-content {
+        color: #e5e7eb;
+      }
+      .message.assistant .message-content {
+        color: #f9fafb;
+      }
+      .answer-meta {
+        font-size: 11px;
+        color: #64748b;
+        margin-top: 6px;
+      }
+      .code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", "Courier New", monospace;
+        font-size: 12px;
+        padding: 4px 6px;
+        background: rgba(15, 23, 42, 0.9);
+        border-radius: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="badge">
+        <span class="badge-dot"></span>
+        Live agentic pipeline
+      </div>
+      <h1>Stock Analysis Agent</h1>
+      <p>
+        Ask multi-step questions like
+        <span class="code"
+          >How does NVIDIA's R&amp;D spend in Q4 2025 compare to its gross
+          margins, and what is the risk for 2026?</span
+        >
+      </p>
+      <div class="sidebar-section">
+        <h2>Pipeline</h2>
+        <ul>
+          <li>1. Query decomposition</li>
+          <li>2. Agent planning</li>
+          <li>3. Hybrid retrieval</li>
+          <li>4. Corrective evaluation</li>
+          <li>5. Synthesis (3-year view)</li>
+          <li>6. Follow-up reasoning</li>
+        </ul>
+      </div>
+      <div class="sidebar-section">
+        <h2>Models</h2>
+        <ul>
+          <li>Open-source LLM via Ollama</li>
+          <li>Or any OpenAI-compatible endpoint</li>
+        </ul>
+      </div>
+      <div class="sidebar-footer">
+        Configure backend via
+        <span class="code">LLM_BACKEND</span>,
+        <span class="code">LLM_MODEL_NAME</span>,
+        <span class="code">LLM_API_BASE</span>.
+      </div>
+    </aside>
+    <main class="main">
+      <div class="input-row">
+        <input
+          id="ticker"
+          class="ticker-input"
+          type="text"
+          placeholder="Ticker (e.g. NVDA)"
+        />
+        <input
+          id="query"
+          class="query-input"
+          type="text"
+          placeholder="Ask a question about R&D, margins, or risk..."
+        />
+        <button id="askBtn">
+          <span>Run analysis</span>
+        </button>
+      </div>
+      <div class="chips-row">
+        <span class="chip">10-K / MD&amp;A</span>
+        <span class="chip">Earnings transcripts</span>
+        <span class="chip">Macro inflation</span>
+        <span class="chip">External industry reports</span>
+      </div>
+      <section id="conversation" class="conversation"></section>
+    </main>
+
+    <script>
+      const askBtn = document.getElementById("askBtn");
+      const tickerInput = document.getElementById("ticker");
+      const queryInput = document.getElementById("query");
+      const conversationEl = document.getElementById("conversation");
+
+      let conversationId = null;
+      const history = [];
+
+      function appendMessage(role, content, meta) {
+        const wrap = document.createElement("div");
+        wrap.className = `message ${role}`;
+
+        const roleEl = document.createElement("div");
+        roleEl.className = "message-role";
+        roleEl.textContent = role === "user" ? "You" : "Agent";
+
+        const contentEl = document.createElement("div");
+        contentEl.className = "message-content";
+        contentEl.textContent = content;
+
+        wrap.appendChild(roleEl);
+        wrap.appendChild(contentEl);
+
+        if (meta) {
+          const metaEl = document.createElement("div");
+          metaEl.className = "answer-meta";
+          metaEl.textContent = meta;
+          wrap.appendChild(metaEl);
+        }
+
+        conversationEl.appendChild(wrap);
+        conversationEl.scrollTop = conversationEl.scrollHeight;
+      }
+
+      async function callBackend(isFollowUp) {
+        const ticker = tickerInput.value.trim() || "NVDA";
+        const query = queryInput.value.trim();
+        if (!query) return;
+
+        appendMessage("user", query);
+        history.push({ role: "user", content: query });
+        queryInput.value = "";
+
+        askBtn.disabled = true;
+        askBtn.textContent = "Thinking...";
+
+        try {
+          let url = "/api/analyze";
+          let payload;
+
+          if (!isFollowUp || !conversationId) {
+            payload = { ticker, query, history };
+          } else {
+            url = "/api/followup";
+            payload = { conversation_id: conversationId, query };
+          }
+
+          const resp = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!resp.ok) {
+            const text = await resp.text();
+            throw new Error(text || resp.statusText);
+          }
+          const data = await resp.json();
+          conversationId = data.conversation_id;
+
+          history.push({ role: "assistant", content: data.answer });
+
+          const meta = [];
+          if (data.used_external_reports) {
+            meta.push("Included external industry reports");
+          }
+          if (data.retrieval_metadata?.retrieved_chunks?.length) {
+            meta.push(
+              `Retrieved ${data.retrieval_metadata.retrieved_chunks.length} evidence chunks`,
+            );
+          }
+
+          appendMessage("assistant", data.answer, meta.join(" • "));
+        } catch (err) {
+          appendMessage(
+            "assistant",
+            "Error while calling backend: " + err.message,
+          );
+        } finally {
+          askBtn.disabled = false;
+          askBtn.textContent = "Run analysis";
+        }
+      }
+
+      askBtn.addEventListener("click", () => {
+        const isFollowUp = !!conversationId;
+        callBackend(isFollowUp);
+      });
+
+      queryInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          const isFollowUp = !!conversationId;
+          callBackend(isFollowUp);
+        }
+      });
+    </script>
+  </body>
+  </html>
+
