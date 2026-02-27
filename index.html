@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Stock Analysis Agent</title>
+    <title>AlphaBridge - Retail Investor's Edge</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       body {
@@ -16,9 +16,11 @@
         min-height: 100vh;
       }
       .sidebar {
+        position: relative;
         width: 260px;
         background: radial-gradient(circle at top left, #1a365d, #020617);
         padding: 24px;
+        padding-bottom: 120px;
         box-sizing: border-box;
         border-right: 1px solid rgba(148, 163, 184, 0.3);
       }
@@ -69,13 +71,14 @@
       .sidebar-section li {
         margin-bottom: 4px;
       }
-      .sidebar-footer {
+      .sidebar-logo {
         position: absolute;
         bottom: 20px;
         left: 24px;
         right: 24px;
-        font-size: 11px;
-        color: #64748b;
+        width: calc(100% - 48px);
+        max-height: 72px;
+        object-fit: contain;
       }
       .main {
         flex: 1;
@@ -192,7 +195,7 @@
         <span class="badge-dot"></span>
         Live agentic pipeline
       </div>
-      <h1>Stock Analysis Agent</h1>
+      <h1>AlphaBridge - Retail Investor's Edge</h1>
       <p>
         Ask multi-step questions like
         <span class="code"
@@ -214,16 +217,11 @@
       <div class="sidebar-section">
         <h2>Models</h2>
         <ul>
-          <li>Open-source LLM via Ollama</li>
-          <li>Or any OpenAI-compatible endpoint</li>
+          <li>Hosted open-source LLM</li>
+          <li>OpenAI-compatible endpoints</li>
         </ul>
       </div>
-      <div class="sidebar-footer">
-        Configure backend via
-        <span class="code">LLM_BACKEND</span>,
-        <span class="code">LLM_MODEL_NAME</span>,
-        <span class="code">LLM_API_BASE</span>.
-      </div>
+      <img class="sidebar-logo" src="/static/Logo.png" alt="AlphaBridge logo" />
     </aside>
     <main class="main">
       <div class="input-row">
@@ -287,10 +285,14 @@
         conversationEl.scrollTop = conversationEl.scrollHeight;
       }
 
-      async function callBackend(isFollowUp) {
+      async function callBackend() {
         const ticker = tickerInput.value.trim() || "NVDA";
         const query = queryInput.value.trim();
         if (!query) return;
+
+        conversationEl.innerHTML = "";
+        conversationId = null;
+        history.length = 0;
 
         appendMessage("user", query);
         history.push({ role: "user", content: query });
@@ -300,15 +302,8 @@
         askBtn.textContent = "Thinking...";
 
         try {
-          let url = "/api/analyze";
-          let payload;
-
-          if (!isFollowUp || !conversationId) {
-            payload = { ticker, query, history };
-          } else {
-            url = "/api/followup";
-            payload = { conversation_id: conversationId, query };
-          }
+          const url = "/api/analyze";
+          const payload = { ticker, query, history };
 
           const resp = await fetch(url, {
             method: "POST",
@@ -347,15 +342,13 @@
       }
 
       askBtn.addEventListener("click", () => {
-        const isFollowUp = !!conversationId;
-        callBackend(isFollowUp);
+        callBackend();
       });
 
       queryInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
-          const isFollowUp = !!conversationId;
-          callBackend(isFollowUp);
+          callBackend();
         }
       });
     </script>

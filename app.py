@@ -4,8 +4,10 @@ from pathlib import Path
 from typing import List, Optional, Literal, Dict, Any
 
 import numpy as np
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
 
@@ -14,23 +16,168 @@ from pydantic import BaseModel, Field
 # =========================
 
 
+load_dotenv()
+
+
 class LLMConfig(BaseModel):
-    backend: Literal["ollama", "openai_compatible"] = "ollama"
+    backend: Literal["ollama", "openai_compatible", "huggingface"] = "ollama"
     model_name: str = "llama3.1"
     api_base: Optional[str] = None  # for OpenAI-compatible HTTP endpoints
     api_key: Optional[str] = None
+    allow_offline_fallback: bool = True
 
 
 def load_llm_config() -> LLMConfig:
+    api_key = os.getenv("LLM_API_KEY") or os.getenv("HF_TOKEN")
     return LLMConfig(
         backend=os.getenv("LLM_BACKEND", "ollama"),
         model_name=os.getenv("LLM_MODEL_NAME", "llama3.1"),
         api_base=os.getenv("LLM_API_BASE"),
-        api_key=os.getenv("LLM_API_KEY"),
+        api_key=api_key,
+        allow_offline_fallback=(
+            os.getenv("LLM_ALLOW_OFFLINE_FALLBACK", "true").strip().lower()
+            in {"1", "true", "yes", "on"}
+        ),
     )
 
 
 LLM_CONFIG = load_llm_config()
+
+
+class LLMBackendUnavailableError(RuntimeError):
+    pass
+
+
+def offline_fallback_response(system_prompt: str, user_prompt: str) -> str:
+    system_lower = system_prompt.lower()
+
+    if "decompose" in system_lower or "information needs" in system_lower:
+        return (
+            '{"information_needs": ['
+            '"R&D trend by year", '
+            '"Gross margin trend by year", '
+            '"Management commentary on margin outlook", '
+            '"Macro/inflation risk for next year"], '
+            '"sources": ["10-K", "earnings_transcript", "macro"], '
+            '"outputs": ["3-year trend table", "risk assessment"]}'
+        )
+
+    if "includes explicit guidance" in system_lower or "has_margin_guidance" in system_lower:
+        return (
+            '{"has_margin_guidance": false, '
+            '"reason": "Offline fallback mode: unable to verify MD&A guidance without live model reasoning.", '
+            '"quoted_guidance_snippets": []}'
+        )
+
+    return (
+        "LLM backend is currently offline, so this answer is generated in fallback mode.\n\n"
+        "Based on the available pipeline structure, monitor R&D intensity versus gross margin trend over the last 3 years, "
+        "then evaluate 2026 risk from pricing pressure, input-cost inflation, demand cyclicality, and execution risk.\n\n"
+        "| Year | R&D % Revenue | Gross Margin % | Notes |\n"
+        "|---|---:|---:|---|\n"
+        "| Y-2 | N/A | N/A | Fallback mode (no live model computation) |\n"
+        "| Y-1 | N/A | N/A | Fallback mode (no live model computation) |\n"
+        "| Y0 | N/A | N/A | Fallback mode (no live model computation) |\n\n"
+        "Key risks for 2026:\n"
+        "- Margin compression from competitive pricing.\n"
+        "- Higher R&D spend with delayed revenue payback.\n"
+        "- Macro slowdown reducing demand visibility.\n"
+        "- Supply-chain and input-cost volatility.\n"
+        "- Execution risk in new product ramps."
+    )
+
+
+async def get_llm_connection_status() -> Dict[str, Any]:
+    import httpx
+
+    try:
+        if LLM_CONFIG.backend == "ollama":
+            async with httpx.AsyncClient(timeout=8) as client:
+                resp = await client.get("http://localhost:11434/api/tags")
+            resp.raise_for_status()
+            data = resp.json()
+            models = [m.get("name", "") for m in data.get("models", [])]
+            model_available = any(
+                m == LLM_CONFIG.model_name or m.startswith(f"{LLM_CONFIG.model_name}:")
+                for m in models
+            )
+            return {
+                "ok": True,
+                "backend": "ollama",
+                "endpoint": "http://localhost:11434",
+                "model": LLM_CONFIG.model_name,
+                "model_available": model_available,
+                "available_models": models,
+                "message": "Connected to Ollama server.",
+            }
+
+        if LLM_CONFIG.backend == "huggingface":
+            if not LLM_CONFIG.api_key:
+                return {
+                    "ok": False,
+                    "backend": "huggingface",
+                    "endpoint": "https://router.huggingface.co/v1",
+                    "model": LLM_CONFIG.model_name,
+                    "message": "Missing API key. Set HF_TOKEN (or LLM_API_KEY).",
+                }
+
+            headers = {"Authorization": f"Bearer {LLM_CONFIG.api_key}"}
+            async with httpx.AsyncClient(timeout=8) as client:
+                resp = await client.get(
+                    "https://router.huggingface.co/v1/models", headers=headers
+                )
+            resp.raise_for_status()
+            data = resp.json()
+            model_ids = [m.get("id", "") for m in data.get("data", []) if isinstance(m, dict)]
+            model_available = LLM_CONFIG.model_name in model_ids if model_ids else None
+            return {
+                "ok": True,
+                "backend": "huggingface",
+                "endpoint": "https://router.huggingface.co/v1",
+                "model": LLM_CONFIG.model_name,
+                "model_available": model_available,
+                "available_models": model_ids,
+                "message": "Connected to Hugging Face hosted inference endpoint.",
+            }
+
+        if not LLM_CONFIG.api_base:
+            return {
+                "ok": False,
+                "backend": "openai_compatible",
+                "endpoint": None,
+                "model": LLM_CONFIG.model_name,
+                "message": "LLM_API_BASE is not set.",
+            }
+
+        base = LLM_CONFIG.api_base.rstrip("/")
+        headers = {}
+        if LLM_CONFIG.api_key:
+            headers["Authorization"] = f"Bearer {LLM_CONFIG.api_key}"
+
+        async with httpx.AsyncClient(timeout=8) as client:
+            resp = await client.get(f"{base}/models", headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+        model_ids = [m.get("id", "") for m in data.get("data", []) if isinstance(m, dict)]
+        model_available = LLM_CONFIG.model_name in model_ids if model_ids else None
+        return {
+            "ok": True,
+            "backend": "openai_compatible",
+            "endpoint": base,
+            "model": LLM_CONFIG.model_name,
+            "model_available": model_available,
+            "available_models": model_ids,
+            "message": "Connected to OpenAI-compatible endpoint.",
+        }
+    except Exception as exc:
+        endpoint = "http://localhost:11434" if LLM_CONFIG.backend == "ollama" else LLM_CONFIG.api_base
+        return {
+            "ok": False,
+            "backend": LLM_CONFIG.backend,
+            "endpoint": endpoint,
+            "model": LLM_CONFIG.model_name,
+            "message": str(exc),
+        }
 
 
 async def call_llm(system_prompt: str, user_prompt: str) -> str:
@@ -40,6 +187,12 @@ async def call_llm(system_prompt: str, user_prompt: str) -> str:
     - For OpenAI-compatible APIs (e.g. vLLM, text-generation-inference), set LLM_BACKEND=openai_compatible.
     """
     import httpx
+
+    status = await get_llm_connection_status()
+    if not status.get("ok"):
+        if LLM_CONFIG.allow_offline_fallback:
+            return offline_fallback_response(system_prompt, user_prompt)
+        raise LLMBackendUnavailableError(status.get("message", "LLM backend unavailable."))
 
     if LLM_CONFIG.backend == "ollama":
         async with httpx.AsyncClient(timeout=120) as client:
@@ -57,6 +210,25 @@ async def call_llm(system_prompt: str, user_prompt: str) -> str:
         resp.raise_for_status()
         data = resp.json()
         return data["message"]["content"]
+
+    if LLM_CONFIG.backend == "huggingface":
+        headers = {"Authorization": f"Bearer {LLM_CONFIG.api_key}"}
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                "https://router.huggingface.co/v1/chat/completions",
+                headers=headers,
+                json={
+                    "model": LLM_CONFIG.model_name,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "stream": False,
+                },
+            )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
 
     # Generic OpenAI-compatible JSON API
     if not LLM_CONFIG.api_base:
@@ -312,6 +484,13 @@ async def synthesize_answer(
 
 
 app = FastAPI(title="Stock Analysis Agent", version="0.1.0")
+app.mount("/static", StaticFiles(directory=Path(__file__).parent), name="static")
+
+
+@app.get("/")
+@app.get("/index.html")
+async def serve_index() -> FileResponse:
+    return FileResponse(Path(__file__).with_name("index.html"))
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -333,29 +512,54 @@ async def index_html() -> FileResponse:
 
 @app.post("/api/analyze", response_model=AnalysisResponse)
 async def analyze(req: AnalysisRequest) -> AnalysisResponse:
-    conversation_id = str(uuid.uuid4())
-    history = req.history.copy()
-    history.append(Message(role="user", content=req.query))
-    CONVERSATIONS[conversation_id] = history
+    try:
+        conversation_id = str(uuid.uuid4())
+        history = req.history.copy()
+        history.append(Message(role="user", content=req.query))
+        CONVERSATIONS[conversation_id] = history
 
-    decomposition = await decompose_query(req.query, req.ticker, history)
-    plan = await plan_sources(decomposition)
-    retrieval_info = await retrieve_and_evaluate(req.ticker, req.query, plan)
-    answer = await synthesize_answer(
-        req.ticker, req.query, decomposition, plan, retrieval_info, history
-    )
+        decomposition = await decompose_query(req.query, req.ticker, history)
+        plan = await plan_sources(decomposition)
+        retrieval_info = await retrieve_and_evaluate(req.ticker, req.query, plan)
+        answer = await synthesize_answer(
+            req.ticker, req.query, decomposition, plan, retrieval_info, history
+        )
 
-    history.append(Message(role="assistant", content=answer))
-    CONVERSATIONS[conversation_id] = history
+        history.append(Message(role="assistant", content=answer))
+        CONVERSATIONS[conversation_id] = history
 
-    return AnalysisResponse(
-        conversation_id=conversation_id,
-        answer=answer,
-        decomposition=decomposition,
-        plan=plan,
-        retrieval_metadata=retrieval_info,
-        used_external_reports=retrieval_info.get("used_external_reports", False),
-    )
+        return AnalysisResponse(
+            conversation_id=conversation_id,
+            answer=answer,
+            decomposition=decomposition,
+            plan=plan,
+            retrieval_metadata=retrieval_info,
+            used_external_reports=retrieval_info.get("used_external_reports", False),
+        )
+    except LLMBackendUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "LLM backend is unavailable. "
+                f"backend={LLM_CONFIG.backend}, model={LLM_CONFIG.model_name}. "
+                f"Details: {exc}"
+            ),
+        ) from exc
+    except Exception as exc:
+        import httpx
+
+        if isinstance(exc, httpx.HTTPStatusError):
+            upstream_status = exc.response.status_code
+            detail = exc.response.text
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "LLM upstream request failed. "
+                    f"backend={LLM_CONFIG.backend}, model={LLM_CONFIG.model_name}, "
+                    f"upstream_status={upstream_status}, response={detail}"
+                ),
+            ) from exc
+        raise
 
 
 class FollowUpRequest(BaseModel):
@@ -365,35 +569,68 @@ class FollowUpRequest(BaseModel):
 
 @app.post("/api/followup", response_model=AnalysisResponse)
 async def followup(req: FollowUpRequest) -> AnalysisResponse:
-    history = CONVERSATIONS.get(req.conversation_id, [])
-    history.append(Message(role="user", content=req.query))
+    try:
+        history = CONVERSATIONS.get(req.conversation_id, [])
+        history.append(Message(role="user", content=req.query))
 
-    # Re-use the same pipeline, but keep the conversation_id stable.
-    # For simplicity, we don't store the ticker on the server; you could
-    # extend the conversation object to track it explicitly.
-    ticker = "UNKNOWN"
+        # Re-use the same pipeline, but keep the conversation_id stable.
+        # For simplicity, we don't store the ticker on the server; you could
+        # extend the conversation object to track it explicitly.
+        ticker = "UNKNOWN"
 
-    decomposition = await decompose_query(req.query, ticker, history)
-    plan = await plan_sources(decomposition)
-    retrieval_info = await retrieve_and_evaluate(ticker, req.query, plan)
-    answer = await synthesize_answer(
-        ticker, req.query, decomposition, plan, retrieval_info, history
-    )
+        decomposition = await decompose_query(req.query, ticker, history)
+        plan = await plan_sources(decomposition)
+        retrieval_info = await retrieve_and_evaluate(ticker, req.query, plan)
+        answer = await synthesize_answer(
+            ticker, req.query, decomposition, plan, retrieval_info, history
+        )
 
-    history.append(Message(role="assistant", content=answer))
-    CONVERSATIONS[req.conversation_id] = history
+        history.append(Message(role="assistant", content=answer))
+        CONVERSATIONS[req.conversation_id] = history
 
-    return AnalysisResponse(
-        conversation_id=req.conversation_id,
-        answer=answer,
-        decomposition=decomposition,
-        plan=plan,
-        retrieval_metadata=retrieval_info,
-        used_external_reports=retrieval_info.get("used_external_reports", False),
-    )
+        return AnalysisResponse(
+            conversation_id=req.conversation_id,
+            answer=answer,
+            decomposition=decomposition,
+            plan=plan,
+            retrieval_metadata=retrieval_info,
+            used_external_reports=retrieval_info.get("used_external_reports", False),
+        )
+    except LLMBackendUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "LLM backend is unavailable. "
+                f"backend={LLM_CONFIG.backend}, model={LLM_CONFIG.model_name}. "
+                f"Details: {exc}"
+            ),
+        ) from exc
+    except Exception as exc:
+        import httpx
+
+        if isinstance(exc, httpx.HTTPStatusError):
+            upstream_status = exc.response.status_code
+            detail = exc.response.text
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "LLM upstream request failed. "
+                    f"backend={LLM_CONFIG.backend}, model={LLM_CONFIG.model_name}, "
+                    f"upstream_status={upstream_status}, response={detail}"
+                ),
+            ) from exc
+        raise
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "backend": LLM_CONFIG.backend, "model": LLM_CONFIG.model_name}
+    llm_connection = await get_llm_connection_status()
+    status = "ok" if llm_connection.get("ok") else ("degraded" if LLM_CONFIG.allow_offline_fallback else "error")
+    return {
+        "status": status,
+        "backend": LLM_CONFIG.backend,
+        "model": LLM_CONFIG.model_name,
+        "offline_fallback_enabled": LLM_CONFIG.allow_offline_fallback,
+        "llm_connection": llm_connection,
+    }
 
